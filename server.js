@@ -7,11 +7,7 @@ const { GoogleGenAI } = require("@google/genai");
 const app = express();
 
 const PORT = process.env.PORT || 3000;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
-
-// ---------------------------------------------
-// MIDDLEWARE
-// ---------------------------------------------
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
 
 app.use(cors());
 
@@ -21,13 +17,12 @@ app.use(
     })
 );
 
-// ---------------------------------------------
-// GEMINI CLIENT
-// ---------------------------------------------
+// --------------------------------------------------
+// API KEY CHECK
+// --------------------------------------------------
 
 if (!process.env.GEMINI_API_KEY) {
     console.error("ERROR: GEMINI_API_KEY is missing.");
-    console.error("Please add GEMINI_API_KEY to your .env file.");
     process.exit(1);
 }
 
@@ -35,22 +30,88 @@ const ai = new GoogleGenAI({
     apiKey: process.env.GEMINI_API_KEY
 });
 
-// ---------------------------------------------
-// HOME / HEALTH CHECK
-// ---------------------------------------------
+// --------------------------------------------------
+// LANGUAGE HINT
+// --------------------------------------------------
+
+function detectLanguageHint(message, preferredLanguage) {
+    const text = message.trim();
+
+    // Devanagari script
+    if (/[\u0900-\u097F]/.test(text)) {
+        if (preferredLanguage === "Marathi") {
+            return "Marathi";
+        }
+
+        if (preferredLanguage === "Hindi") {
+            return "Hindi";
+        }
+
+        return "Devanagari Indian language";
+    }
+
+    const lower = text.toLowerCase();
+
+    // Common Hinglish/Hindi words written in English
+    const hinglishWords = [
+        "kya",
+        "kaise",
+        "kaisa",
+        "mujhe",
+        "mera",
+        "meri",
+        "mere",
+        "tum",
+        "aap",
+        "hai",
+        "hain",
+        "karna",
+        "karo",
+        "kar",
+        "chahiye",
+        "batao",
+        "bata",
+        "kyun",
+        "kab",
+        "kahan",
+        "ka",
+        "ki",
+        "ke"
+    ];
+
+    const isHinglish = hinglishWords.some(word =>
+        new RegExp(`\\b${word}\\b`, "i").test(lower)
+    );
+
+    if (isHinglish) {
+        return "Hinglish";
+    }
+
+    // English
+    if (/[a-zA-Z]/.test(text)) {
+        return "English";
+    }
+
+    return preferredLanguage || "English";
+}
+
+// --------------------------------------------------
+// HEALTH CHECK
+// --------------------------------------------------
 
 app.get("/", (req, res) => {
     res.json({
         success: true,
         app: "AIVA Backend",
         status: "online",
-        ai: "Gemini"
+        ai: "Gemini",
+        model: GEMINI_MODEL
     });
 });
 
-// ---------------------------------------------
+// --------------------------------------------------
 // CHAT API
-// ---------------------------------------------
+// --------------------------------------------------
 
 app.post("/api/chat", async (req, res) => {
     try {
@@ -59,7 +120,7 @@ app.post("/api/chat", async (req, res) => {
                 ? req.body.message.trim()
                 : "";
 
-        const language =
+        const preferredLanguage =
             typeof req.body.language === "string"
                 ? req.body.language
                 : "English";
@@ -74,10 +135,6 @@ app.post("/api/chat", async (req, res) => {
                 ? req.body.conversation
                 : [];
 
-        // -----------------------------------------
-        // VALIDATE MESSAGE
-        // -----------------------------------------
-
         if (!message) {
             return res.status(400).json({
                 success: false,
@@ -85,10 +142,14 @@ app.post("/api/chat", async (req, res) => {
             });
         }
 
-        // -----------------------------------------
-        // SAFE CONVERSATION HISTORY
-        // -----------------------------------------
+        // Detect language from CURRENT question
+        const languageHint =
+            detectLanguageHint(
+                message,
+                preferredLanguage
+            );
 
+        // Keep history smaller for faster requests
         const safeConversation =
             conversation
                 .filter(
@@ -97,46 +158,84 @@ app.post("/api/chat", async (req, res) => {
                         typeof item.text === "string" &&
                         typeof item.isUser === "boolean"
                 )
-                .slice(-20);
+                .slice(-10);
 
-        // -----------------------------------------
-        // SYSTEM INSTRUCTION
-        // -----------------------------------------
+        // --------------------------------------------------
+        // AIVA SYSTEM INSTRUCTION
+        // --------------------------------------------------
 
         const systemInstruction = `
-You are ${aiName}, a personal AI assistant inside an Android application called AIVA.
+You are ${aiName}, the personal AI assistant inside an Android application called AIVA.
 
-The user's preferred language is:
-${language}
+USER PREFERRED LANGUAGE:
+${preferredLanguage}
 
-Personality:
+CURRENT MESSAGE LANGUAGE HINT:
+${languageHint}
+
+VERY IMPORTANT LANGUAGE RULE:
+
+Always answer in the SAME LANGUAGE as the user's LATEST MESSAGE.
+
+The latest user message has higher priority than the saved preferred language.
+
+Examples:
+
+- User asks in Hindi Devanagari → answer in Hindi Devanagari.
+- User asks in Marathi Devanagari → answer in Marathi Devanagari.
+- User asks in English → answer in English.
+- User asks in Hinglish → answer in natural Hinglish.
+- User mixes Hindi + English → answer naturally in Hinglish.
+- User writes Marathi using English/Roman letters → understand Marathi and answer in natural Marathi/Roman Marathi when appropriate.
+- Do NOT blindly use the preferred language if the latest message is clearly written in another language.
+
+Do not translate the user's question unless they ask for translation.
+
+PERSONALITY:
 - Friendly
-- Helpful
 - Natural
+- Helpful
 - Intelligent
 - Warm
-- Concise when appropriate
-- Understand Hindi, Marathi, English and Hinglish
-- Understand Indian conversational language
+- Conversational
+- Concise
+- Like a modern personal AI assistant
 
-Important rules:
-- Answer naturally like a helpful personal AI assistant.
-- Follow the user's preferred language whenever possible.
-- You can understand mixed Hindi, Marathi and English.
-- Do not claim an Android action was completed unless the application actually performed it.
-- Do not pretend to have opened an app, sent a message, made a call, changed a setting, or performed another device action when no such tool is connected.
-- If a device capability is not connected yet, clearly say that it is not connected yet.
+RESPONSE STYLE:
+- Give the direct answer first.
+- Avoid unnecessary long explanations.
+- For simple questions, keep the answer short.
+- For complex questions, explain clearly with useful details.
+- Understand Hindi, Marathi, English and Hinglish.
+- Understand normal Indian conversational language.
+
+IMPORTANT ACTION RULE:
+Do not claim that an Android action was completed unless the application actually performed that action.
+
+For example:
+- Do not say "YouTube opened" unless the app actually opened YouTube.
+- Do not say "I sent the message" unless a connected tool actually sent it.
+- Do not say "I made the call" unless the application actually made the call.
+- Do not pretend to control the phone.
+
+If a device capability is not connected yet, clearly say that the capability is not connected yet.
+
+CURRENT USER MESSAGE:
+${message}
 `;
 
-        // -----------------------------------------
-        // BUILD CONVERSATION
-        // -----------------------------------------
+        // --------------------------------------------------
+        // CONVERSATION
+        // --------------------------------------------------
 
         const contents = [];
 
         for (const item of safeConversation) {
             contents.push({
-                role: item.isUser ? "user" : "model",
+                role: item.isUser
+                    ? "user"
+                    : "model",
+
                 parts: [
                     {
                         text: item.text
@@ -145,7 +244,6 @@ Important rules:
             });
         }
 
-        // Add current user message
         contents.push({
             role: "user",
             parts: [
@@ -155,43 +253,41 @@ Important rules:
             ]
         });
 
-        // -----------------------------------------
+        // --------------------------------------------------
         // GEMINI REQUEST
-        // -----------------------------------------
+        // --------------------------------------------------
 
-        const response = await ai.models.generateContent({
-            model: GEMINI_MODEL,
+        const response =
+            await ai.models.generateContent({
+                model: GEMINI_MODEL,
 
-            contents: contents,
+                contents: contents,
 
-            config: {
-                systemInstruction: systemInstruction,
-                maxOutputTokens: 700,
-                temperature: 0.7
-            }
-        });
+                config: {
+                    systemInstruction:
+                        systemInstruction,
+
+                    maxOutputTokens: 400,
+
+                    temperature: 0.6
+                }
+            });
 
         const outputText =
-            response.text || "";
+            response.text
+                ? response.text.trim()
+                : "";
 
-        // -----------------------------------------
-        // EMPTY RESPONSE
-        // -----------------------------------------
-
-        if (!outputText.trim()) {
+        if (!outputText) {
             return res.status(502).json({
                 success: false,
                 error: "Gemini returned an empty response."
             });
         }
 
-        // -----------------------------------------
-        // SUCCESS
-        // -----------------------------------------
-
         return res.json({
             success: true,
-            response: outputText.trim()
+            response: outputText
         });
 
     } catch (error) {
@@ -203,19 +299,21 @@ Important rules:
 
         return res.status(500).json({
             success: false,
-            error: "AIVA AI service temporarily unavailable."
+            error:
+                "AIVA AI service temporarily unavailable."
         });
     }
 });
 
-// ---------------------------------------------
+// --------------------------------------------------
 // START SERVER
-// ---------------------------------------------
+// --------------------------------------------------
 
 app.listen(
     PORT,
     "0.0.0.0",
     () => {
+
         console.log(
             `AIVA Backend running on port ${PORT}`
         );
