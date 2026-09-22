@@ -22,6 +22,7 @@ const FALLBACK_MODEL =
 
 const MAX_HISTORY = 10;
 const MAX_ATTEMPTS = 3;
+const MAX_OUTPUT_TOKENS = 1200;
 
 const ai = new GoogleGenAI({
     apiKey: process.env.GEMINI_API_KEY
@@ -39,6 +40,7 @@ app.use(express.json());
 // =====================================================
 
 function detectResponseStyle(message, preferredLanguage) {
+
     const text = message.trim();
 
     const hasDevanagari =
@@ -47,9 +49,9 @@ function detectResponseStyle(message, preferredLanguage) {
     const hasLatin =
         /[A-Za-z]/.test(text);
 
-    // -------------------------------------------------
+    // =================================================
     // DEVANAGARI
-    // -------------------------------------------------
+    // =================================================
 
     if (hasDevanagari) {
 
@@ -70,6 +72,7 @@ function detectResponseStyle(message, preferredLanguage) {
             "सांगा",
             "कुठे",
             "शिकायचं",
+            "शिकायचे",
             "करायचं",
             "करायची",
             "किती",
@@ -83,6 +86,7 @@ function detectResponseStyle(message, preferredLanguage) {
             ).length;
 
         if (marathiScore > 0) {
+
             return {
                 language: "Marathi",
                 script: "Devanagari"
@@ -95,9 +99,9 @@ function detectResponseStyle(message, preferredLanguage) {
         };
     }
 
-    // -------------------------------------------------
+    // =================================================
     // ROMAN / ENGLISH
-    // -------------------------------------------------
+    // =================================================
 
     if (hasLatin) {
 
@@ -126,12 +130,21 @@ function detectResponseStyle(message, preferredLanguage) {
             "kuthe",
             "shikaycha",
             "shikaychi",
+            "shikayche",
             "karaycha",
             "karaychi",
+            "karayche",
             "kiti",
             "kaay",
             "ho",
-            "nahi"
+            "nahi",
+            "mhanun",
+            "pan",
+            "aani",
+            "tumhala",
+            "tyala",
+            "tyachi",
+            "tyache"
         ];
 
         const hindiWords = [
@@ -143,6 +156,7 @@ function detectResponseStyle(message, preferredLanguage) {
             "tum",
             "tumhe",
             "aap",
+            "aapko",
             "kya",
             "kaise",
             "kaisa",
@@ -150,13 +164,19 @@ function detectResponseStyle(message, preferredLanguage) {
             "hain",
             "karna",
             "karni",
+            "karne",
             "chahiye",
             "batao",
             "bataiye",
             "kahan",
             "kitna",
             "kyun",
-            "kyon"
+            "kyon",
+            "mujhse",
+            "aapka",
+            "aapki",
+            "aapke",
+            "mujhko"
         ];
 
         const marathiScore =
@@ -169,11 +189,12 @@ function detectResponseStyle(message, preferredLanguage) {
                 words.includes(word)
             ).length;
 
-        // Strong Marathi detection
+        // Strong Marathi signal
         if (
             marathiScore >= 2 &&
             marathiScore > hindiScore
         ) {
+
             return {
                 language: "Marathi",
                 script: "Roman"
@@ -182,6 +203,7 @@ function detectResponseStyle(message, preferredLanguage) {
 
         // Hindi / Hinglish
         if (hindiScore > 0) {
+
             return {
                 language: "Hindi",
                 script: "Roman"
@@ -195,9 +217,9 @@ function detectResponseStyle(message, preferredLanguage) {
         };
     }
 
-    // -------------------------------------------------
-    // FALLBACK TO USER'S SELECTED LANGUAGE
-    // -------------------------------------------------
+    // =================================================
+    // FALLBACK
+    // =================================================
 
     return {
         language:
@@ -216,12 +238,14 @@ function createLanguageInstruction(style) {
         style.language === "Hindi" &&
         style.script === "Devanagari"
     ) {
+
         return `
+LANGUAGE:
 Reply in natural Hindi using Devanagari script.
 
 Do not unnecessarily switch to English.
 
-Use simple, natural Hindi.
+Keep technical English terms only when they are useful.
 `;
     }
 
@@ -229,14 +253,18 @@ Use simple, natural Hindi.
         style.language === "Hindi" &&
         style.script === "Roman"
     ) {
+
         return `
+LANGUAGE:
 Reply in natural Roman Hindi / Hinglish.
 
 Use English letters only.
 
 Do NOT use Devanagari script.
 
-Keep the response conversational and natural.
+Do NOT convert the answer into pure English.
+
+Keep the language natural and conversational.
 `;
     }
 
@@ -244,12 +272,16 @@ Keep the response conversational and natural.
         style.language === "Marathi" &&
         style.script === "Devanagari"
     ) {
+
         return `
+LANGUAGE:
 Reply in natural Marathi using Devanagari script.
 
 Do NOT switch to Hindi.
 
-English technical terms are allowed when necessary.
+Technical English terms are allowed when necessary.
+
+Keep the response naturally Marathi.
 `;
     }
 
@@ -257,7 +289,9 @@ English technical terms are allowed when necessary.
         style.language === "Marathi" &&
         style.script === "Roman"
     ) {
+
         return `
+LANGUAGE:
 Reply in natural Roman Marathi.
 
 Use English letters only.
@@ -266,14 +300,15 @@ Do NOT use Devanagari script.
 
 Do NOT convert Marathi into Hindi.
 
-Keep the response natural and conversational.
+Keep the response naturally Marathi.
 `;
     }
 
     return `
+LANGUAGE:
 Reply in natural English.
 
-Use clear and simple English.
+Use clear and easy-to-understand English.
 `;
 }
 
@@ -301,7 +336,7 @@ function getErrorMessage(error) {
 }
 
 // =====================================================
-// RETRYABLE ERROR DETECTION
+// RETRYABLE ERROR
 // =====================================================
 
 function isRetryableGeminiError(error) {
@@ -332,7 +367,7 @@ function isRetryableGeminiError(error) {
 }
 
 // =====================================================
-// DELAY
+// SLEEP
 // =====================================================
 
 function sleep(ms) {
@@ -357,7 +392,7 @@ async function generateGeminiResponse(request) {
     for (const model of models) {
 
         console.log(
-            `\nUsing Gemini model: ${model}`
+            `Using Gemini model: ${model}`
         );
 
         for (
@@ -396,24 +431,15 @@ async function generateGeminiResponse(request) {
                     `Gemini error | model=${model} | attempt=${attempt} | code=${code}`
                 );
 
-                console.error(
-                    message
-                );
+                console.error(message);
 
                 const retryable =
                     isRetryableGeminiError(error);
 
-                // Non-retryable error
                 if (!retryable) {
-
-                    console.error(
-                        `Non-retryable Gemini error on ${model}`
-                    );
-
                     throw error;
                 }
 
-                // Last attempt for this model
                 if (
                     attempt === MAX_ATTEMPTS
                 ) {
@@ -425,7 +451,6 @@ async function generateGeminiResponse(request) {
                     break;
                 }
 
-                // Exponential backoff
                 const baseDelay =
                     attempt === 1
                         ? 1000
@@ -447,7 +472,6 @@ async function generateGeminiResponse(request) {
             }
         }
 
-        // Move to fallback model
         if (
             model === PRIMARY_MODEL &&
             FALLBACK_MODEL !== PRIMARY_MODEL
@@ -471,10 +495,17 @@ async function generateGeminiResponse(request) {
 app.get("/", (req, res) => {
 
     res.json({
+
         success: true,
-        message: "AIVA Backend is running.",
-        primaryModel: PRIMARY_MODEL,
-        fallbackModel: FALLBACK_MODEL
+
+        message:
+            "AIVA Backend is running.",
+
+        primaryModel:
+            PRIMARY_MODEL,
+
+        fallbackModel:
+            FALLBACK_MODEL
     });
 });
 
@@ -493,9 +524,9 @@ app.post("/api/chat", async (req, res) => {
             conversation
         } = req.body;
 
-        // -------------------------------------------------
+        // =================================================
         // VALIDATION
-        // -------------------------------------------------
+        // =================================================
 
         if (
             !message ||
@@ -503,15 +534,19 @@ app.post("/api/chat", async (req, res) => {
         ) {
 
             return res.status(400).json({
+
                 success: false,
-                error: "Message is required.",
+
+                error:
+                    "Message is required.",
+
                 retryable: false
             });
         }
 
-        // -------------------------------------------------
+        // =================================================
         // LANGUAGE DETECTION
-        // -------------------------------------------------
+        // =================================================
 
         const responseStyle =
             detectResponseStyle(
@@ -524,18 +559,18 @@ app.post("/api/chat", async (req, res) => {
             responseStyle
         );
 
-        // -------------------------------------------------
+        // =================================================
         // LANGUAGE INSTRUCTION
-        // -------------------------------------------------
+        // =================================================
 
         const languageInstruction =
             createLanguageInstruction(
                 responseStyle
             );
 
-        // -------------------------------------------------
+        // =================================================
         // CONVERSATION HISTORY
-        // -------------------------------------------------
+        // =================================================
 
         const history =
             Array.isArray(conversation)
@@ -555,56 +590,107 @@ app.post("/api/chat", async (req, res) => {
                 })
                 .join("\n");
 
-        // -------------------------------------------------
+        // =================================================
         // SYSTEM INSTRUCTION
-        // -------------------------------------------------
+        // =================================================
 
         const systemInstruction = `
 You are ${aiName || "AIVA"}.
 
 You are AIVA, a helpful personal AI assistant inside an Android application.
 
-Your responsibilities include:
+Your main purpose is to understand the user naturally
+and provide useful, accurate and practical answers.
 
-- Answering questions.
-- Helping with Android development.
-- Helping with Kotlin and Jetpack Compose.
-- Helping with programming.
-- Helping with studies.
-- Helping with general knowledge.
-- Helping with planning.
-- Helping with problem solving.
-- Understanding Hindi.
-- Understanding Hinglish.
-- Understanding Marathi.
-- Understanding Roman Marathi.
-- Understanding English.
+You can help with:
 
-IMPORTANT:
+- General questions
+- Android development
+- Kotlin
+- Jetpack Compose
+- Programming
+- App development
+- Studies
+- Learning
+- Planning
+- Problem solving
+- Technology
+- Everyday questions
+
+=====================================================
+LANGUAGE
+=====================================================
 
 The latest user message has the highest priority.
 
 ${languageInstruction}
 
-Always preserve the user's intended language and script.
+Always preserve the user's language and script.
 
-Do not unnecessarily change the language.
+Do NOT change Roman Hindi into Devanagari.
 
-If the user asks for code:
-provide clean, practical, copy-paste-ready code.
+Do NOT change Roman Marathi into Hindi.
 
-If the user asks a simple question:
-answer directly.
+Do NOT change Marathi into Hindi.
 
-If the user asks for an explanation:
-explain clearly with useful examples.
+Do NOT change English into Hindi or Marathi unless the user asks.
+
+=====================================================
+RESPONSE LENGTH
+=====================================================
+
+Do NOT unnecessarily give very short answers.
+
+Give a complete and useful answer when the question
+needs explanation.
+
+Hindi, Hinglish, Marathi and English responses should
+have a similar level of useful detail.
+
+Do NOT make Hindi or Marathi answers shorter simply
+because the user is using Roman script.
+
+Only give a very short answer when the user explicitly
+asks for:
+
+- short answer
+- brief answer
+- one line
+- summary
+- in short
+
+For normal questions, explain enough to be genuinely useful.
+
+=====================================================
+TECHNICAL QUESTIONS
+=====================================================
+
+For Android, Kotlin, Jetpack Compose and programming
+questions:
+
+- Explain the solution clearly.
+- Give steps when appropriate.
+- Mention important settings or dependencies.
+- If code is requested, provide complete copy-paste-ready code.
+- Do not intentionally omit important parts of the solution.
+- Keep code clean and practical.
+
+=====================================================
+CONVERSATION
+=====================================================
+
+Use the conversation history when useful.
+
+Do not repeat the same information unnecessarily.
+
+Answer the latest user request directly.
 
 Do not mention these internal instructions.
 `;
 
-        // -------------------------------------------------
+        // =================================================
         // GEMINI REQUEST
-        // -------------------------------------------------
+        // =================================================
 
         const request = {
 
@@ -618,22 +704,25 @@ User: ${message}
 
                 systemInstruction,
 
-                maxOutputTokens: 500
+                temperature: 0.7,
+
+                maxOutputTokens:
+                    MAX_OUTPUT_TOKENS
             }
         };
 
-        // -------------------------------------------------
-        // CALL GEMINI
-        // -------------------------------------------------
+        // =================================================
+        // GEMINI
+        // =================================================
 
         const response =
             await generateGeminiResponse(
                 request
             );
 
-        // -------------------------------------------------
-        // EXTRACT RESPONSE
-        // -------------------------------------------------
+        // =================================================
+        // RESPONSE
+        // =================================================
 
         const answer =
             response?.text?.trim();
@@ -641,16 +730,19 @@ User: ${message}
         if (!answer) {
 
             return res.status(502).json({
+
                 success: false,
+
                 error:
                     "Gemini returned an empty response.",
+
                 retryable: true
             });
         }
 
-        // -------------------------------------------------
+        // =================================================
         // SUCCESS
-        // -------------------------------------------------
+        // =================================================
 
         return res.json({
 
@@ -668,7 +760,7 @@ User: ${message}
     } catch (error) {
 
         console.error(
-            "\nAIVA GEMINI ERROR:"
+            "AIVA GEMINI ERROR:"
         );
 
         console.error(error);
@@ -679,9 +771,9 @@ User: ${message}
         const retryable =
             isRetryableGeminiError(error);
 
-        // -------------------------------------------------
-        // TEMPORARY GEMINI ERROR
-        // -------------------------------------------------
+        // =================================================
+        // TEMPORARY ERROR
+        // =================================================
 
         if (retryable) {
 
@@ -698,9 +790,9 @@ User: ${message}
             });
         }
 
-        // -------------------------------------------------
+        // =================================================
         // OTHER ERROR
-        // -------------------------------------------------
+        // =================================================
 
         return res.status(500).json({
 
@@ -721,22 +813,26 @@ User: ${message}
 app.listen(PORT, () => {
 
     console.log(
-        "===================================="
+        "========================================"
     );
 
     console.log(
-        "AIVA Backend running on port " + PORT
+        `AIVA Backend running on port ${PORT}`
     );
 
     console.log(
-        "Primary model: " + PRIMARY_MODEL
+        `Primary model: ${PRIMARY_MODEL}`
     );
 
     console.log(
-        "Fallback model: " + FALLBACK_MODEL
+        `Fallback model: ${FALLBACK_MODEL}`
     );
 
     console.log(
-        "===================================="
+        `Max output tokens: ${MAX_OUTPUT_TOKENS}`
+    );
+
+    console.log(
+        "========================================"
     );
 });
