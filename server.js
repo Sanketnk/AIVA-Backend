@@ -7,7 +7,13 @@ const { GoogleGenAI } = require("@google/genai");
 const app = express();
 
 const PORT = process.env.PORT || 3000;
-const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
+const GEMINI_MODEL =
+    process.env.GEMINI_MODEL || "gemini-3.6-flash";
+
+
+// ============================================================
+// MIDDLEWARE
+// ============================================================
 
 app.use(cors());
 
@@ -17,12 +23,16 @@ app.use(
     })
 );
 
-// --------------------------------------------------
-// API KEY CHECK
-// --------------------------------------------------
+
+// ============================================================
+// GEMINI API CHECK
+// ============================================================
 
 if (!process.env.GEMINI_API_KEY) {
-    console.error("ERROR: GEMINI_API_KEY is missing.");
+    console.error(
+        "ERROR: GEMINI_API_KEY is missing."
+    );
+
     process.exit(1);
 }
 
@@ -30,42 +40,158 @@ const ai = new GoogleGenAI({
     apiKey: process.env.GEMINI_API_KEY
 });
 
-// --------------------------------------------------
-// LANGUAGE HINT
-// --------------------------------------------------
 
-function detectLanguageHint(message, preferredLanguage) {
-    const text = message.trim();
+// ============================================================
+// LANGUAGE DETECTION
+// ============================================================
 
-    // Devanagari script
-    if (/[\u0900-\u097F]/.test(text)) {
-        if (preferredLanguage === "Marathi") {
-            return "Marathi";
-        }
+function detectResponseStyle(
+    message,
+    preferredLanguage
+) {
 
-        if (preferredLanguage === "Hindi") {
-            return "Hindi";
-        }
+    const text =
+        message
+            .trim()
+            .toLowerCase();
 
-        return "Devanagari Indian language";
+    // --------------------------------------------------------
+    // Empty message
+    // --------------------------------------------------------
+
+    if (!text) {
+        return {
+            language: preferredLanguage || "English",
+            script: "default"
+        };
     }
 
-    const lower = text.toLowerCase();
 
-    // Common Hinglish/Hindi words written in English
-    const hinglishWords = [
-        "kya",
-        "kaise",
-        "kaisa",
+    // --------------------------------------------------------
+    // Devanagari
+    // --------------------------------------------------------
+
+    if (/[\u0900-\u097F]/.test(text)) {
+
+        // Strong Marathi words
+        const marathiWords = [
+            "आहे",
+            "आहेत",
+            "म्हणजे",
+            "काय",
+            "मला",
+            "माझे",
+            "माझा",
+            "माझी",
+            "तुम्ही",
+            "तू",
+            "कसे",
+            "कशी",
+            "कसा",
+            "करायचे",
+            "करायचं",
+            "पाहिजे",
+            "हवे",
+            "सांगा",
+            "कुठे",
+            "का"
+        ];
+
+        const hasMarathiWords =
+            marathiWords.some(word =>
+                text.includes(word)
+            );
+
+        if (hasMarathiWords) {
+            return {
+                language: "Marathi",
+                script: "Devanagari"
+            };
+        }
+
+
+        // Hindi
+        return {
+            language: "Hindi",
+            script: "Devanagari"
+        };
+    }
+
+
+    // --------------------------------------------------------
+    // Roman Marathi detection
+    // --------------------------------------------------------
+
+    const marathiRomanWords = [
+        "mhanje",
+        "mala",
+        "majha",
+        "majhi",
+        "majhe",
+        "mala",
+        "ahe",
+        "aahe",
+        "ahet",
+        "kay",
+        "kasa",
+        "kashi",
+        "kase",
+        "tumhi",
+        "tula",
+        "tujha",
+        "tujhi",
+        "karaycha",
+        "karaychi",
+        "karayche",
+        "karaych",
+        "pahije",
+        "havay",
+        "hava",
+        "havi",
+        "sanga",
+        "sang",
+        "kuthe",
+        "kadhi",
+        "ka",
+        "shikaycha",
+        "shikaychi",
+        "shikav",
+        "banvaycha",
+        "banvaychi",
+        "karu",
+        "karto",
+        "karte",
+        "kartoy",
+        "kartes",
+        "aapan"
+    ];
+
+
+    const hindiRomanWords = [
         "mujhe",
+        "mujhko",
         "mera",
         "meri",
         "mere",
+        "mujhse",
         "tum",
+        "tumhara",
+        "tumhari",
         "aap",
+        "aapka",
+        "aapki",
+        "kya",
+        "kaise",
+        "kaisa",
+        "kaisi",
         "hai",
         "hain",
+        "tha",
+        "thi",
+        "the",
         "karna",
+        "karni",
+        "karne",
         "karo",
         "kar",
         "chahiye",
@@ -76,238 +202,581 @@ function detectLanguageHint(message, preferredLanguage) {
         "kahan",
         "ka",
         "ki",
-        "ke"
+        "ke",
+        "mera",
+        "mujhe",
+        "sakta",
+        "sakti",
+        "sakte"
     ];
 
-    const isHinglish = hinglishWords.some(word =>
-        new RegExp(`\\b${word}\\b`, "i").test(lower)
-    );
 
-    if (isHinglish) {
-        return "Hinglish";
+    const words =
+        text
+            .replace(
+                /[^a-zA-Z\s]/g,
+                " "
+            )
+            .split(/\s+/)
+            .filter(Boolean);
+
+
+    let marathiScore = 0;
+    let hindiScore = 0;
+
+
+    for (const word of words) {
+
+        if (marathiRomanWords.includes(word)) {
+            marathiScore++;
+        }
+
+        if (hindiRomanWords.includes(word)) {
+            hindiScore++;
+        }
     }
 
+
+    // --------------------------------------------------------
+    // Roman Marathi
+    // --------------------------------------------------------
+
+    if (marathiScore >= 2 &&
+        marathiScore > hindiScore) {
+
+        return {
+            language: "Marathi",
+            script: "Roman"
+        };
+    }
+
+
+    // Strong Marathi single-word signals
+    if (
+        words.includes("mhanje") ||
+        words.includes("ahe") ||
+        words.includes("aahe") ||
+        words.includes("ahet") ||
+        words.includes("tumhi") ||
+        words.includes("majha") ||
+        words.includes("majhi") ||
+        words.includes("mala") &&
+        words.includes("kay")
+    ) {
+
+        if (marathiScore >= hindiScore) {
+
+            return {
+                language: "Marathi",
+                script: "Roman"
+            };
+        }
+    }
+
+
+    // --------------------------------------------------------
+    // Roman Hindi / Hinglish
+    // --------------------------------------------------------
+
+    if (hindiScore > 0) {
+
+        return {
+            language: "Hindi",
+            script: "Roman"
+        };
+    }
+
+
+    // --------------------------------------------------------
     // English
+    // --------------------------------------------------------
+
     if (/[a-zA-Z]/.test(text)) {
-        return "English";
+
+        return {
+            language: "English",
+            script: "Latin"
+        };
     }
 
-    return preferredLanguage || "English";
+
+    // --------------------------------------------------------
+    // Preferred language fallback
+    // --------------------------------------------------------
+
+    return {
+        language:
+            preferredLanguage || "English",
+
+        script: "default"
+    };
 }
 
-// --------------------------------------------------
+
+// ============================================================
+// LANGUAGE INSTRUCTION
+// ============================================================
+
+function createLanguageInstruction(
+    style
+) {
+
+    if (
+        style.language === "Hindi" &&
+        style.script === "Devanagari"
+    ) {
+
+        return `
+The user is writing Hindi in Devanagari script.
+
+Answer in natural Hindi using Devanagari script.
+
+Do NOT convert the answer to Roman Hindi.
+Do NOT answer in Marathi.
+Do NOT answer in English unless a technical term naturally needs English.
+`;
+    }
+
+
+    if (
+        style.language === "Hindi" &&
+        style.script === "Roman"
+    ) {
+
+        return `
+The user is writing Hindi/Hinglish using Roman/English letters.
+
+Answer in NATURAL ROMAN HINDI / HINGLISH.
+
+IMPORTANT:
+- Use English letters.
+- Do NOT switch to Devanagari Hindi.
+- Do NOT suddenly answer in Marathi.
+- English technical words are allowed naturally.
+- Keep the same casual conversational style.
+
+Example:
+
+User:
+"Mujhe Android app banana hai"
+
+Good:
+"Bilkul, main tumhe Android app step-by-step banana sikha sakti hoon."
+
+Bad:
+"बिल्कुल, मैं आपको Android app..."
+`;
+    }
+
+
+    if (
+        style.language === "Marathi" &&
+        style.script === "Devanagari"
+    ) {
+
+        return `
+The user is writing Marathi in Devanagari script.
+
+Answer in natural Marathi using Devanagari script.
+
+Do NOT switch to Hindi.
+Do NOT convert Marathi into Roman script.
+Use English technical terms only when naturally useful.
+`;
+    }
+
+
+    if (
+        style.language === "Marathi" &&
+        style.script === "Roman"
+    ) {
+
+        return `
+The user is writing Marathi using Roman/English letters.
+
+Answer in NATURAL ROMAN MARATHI.
+
+IMPORTANT:
+- Use English/Roman letters.
+- Do NOT switch to Devanagari Marathi.
+- Do NOT switch to Hindi.
+- Do NOT use Roman Hindi.
+- Preserve Marathi vocabulary and sentence structure.
+
+Example:
+
+User:
+"AI mhanje kay?"
+
+Good:
+"AI mhanje Artificial Intelligence. Hi ek technology aahe ji machines na data samjun..."
+
+Bad:
+"AI kya hai?"
+`;
+    }
+
+
+    return `
+The user is writing English.
+
+Answer in natural English.
+
+Do not unnecessarily translate the answer into Hindi or Marathi.
+`;
+}
+
+
+// ============================================================
 // HEALTH CHECK
-// --------------------------------------------------
+// ============================================================
 
 app.get("/", (req, res) => {
+
     res.json({
+
         success: true,
+
         app: "AIVA Backend",
+
         status: "online",
+
         ai: "Gemini",
+
         model: GEMINI_MODEL
+
     });
 });
 
-// --------------------------------------------------
+
+// ============================================================
 // CHAT API
-// --------------------------------------------------
+// ============================================================
 
-app.post("/api/chat", async (req, res) => {
-    try {
-        const message =
-            typeof req.body.message === "string"
-                ? req.body.message.trim()
-                : "";
+app.post(
+    "/api/chat",
+    async (req, res) => {
 
-        const preferredLanguage =
-            typeof req.body.language === "string"
-                ? req.body.language
-                : "English";
+        try {
 
-        const aiName =
-            typeof req.body.aiName === "string"
-                ? req.body.aiName
-                : "AIVA";
+            const message =
+                typeof req.body.message === "string"
+                    ? req.body.message.trim()
+                    : "";
 
-        const conversation =
-            Array.isArray(req.body.conversation)
-                ? req.body.conversation
-                : [];
 
-        if (!message) {
-            return res.status(400).json({
-                success: false,
-                error: "Message is required."
-            });
-        }
+            const preferredLanguage =
+                typeof req.body.language === "string"
+                    ? req.body.language
+                    : "English";
 
-        // Detect language from CURRENT question
-        const languageHint =
-            detectLanguageHint(
-                message,
-                preferredLanguage
+
+            const aiName =
+                typeof req.body.aiName === "string"
+                    ? req.body.aiName
+                    : "AIVA";
+
+
+            const conversation =
+                Array.isArray(
+                    req.body.conversation
+                )
+                    ? req.body.conversation
+                    : [];
+
+
+            // ------------------------------------------------
+            // Validate message
+            // ------------------------------------------------
+
+            if (!message) {
+
+                return res.status(400).json({
+
+                    success: false,
+
+                    error:
+                        "Message is required."
+
+                });
+            }
+
+
+            // ------------------------------------------------
+            // Detect CURRENT message language
+            // ------------------------------------------------
+
+            const responseStyle =
+                detectResponseStyle(
+                    message,
+                    preferredLanguage
+                );
+
+
+            const languageInstruction =
+                createLanguageInstruction(
+                    responseStyle
+                );
+
+
+            console.log(
+                "AIVA language detection:",
+                responseStyle
             );
 
-        // Keep history smaller for faster requests
-        const safeConversation =
-            conversation
-                .filter(
-                    item =>
-                        item &&
-                        typeof item.text === "string" &&
-                        typeof item.isUser === "boolean"
-                )
-                .slice(-10);
 
-        // --------------------------------------------------
-        // AIVA SYSTEM INSTRUCTION
-        // --------------------------------------------------
+            // ------------------------------------------------
+            // Conversation history
+            // ------------------------------------------------
 
-        const systemInstruction = `
-You are ${aiName}, the personal AI assistant inside an Android application called AIVA.
+            const safeConversation =
+                conversation
+                    .filter(
+                        item =>
+                            item &&
+                            typeof item.text ===
+                                "string" &&
+                            typeof item.isUser ===
+                                "boolean"
+                    )
+                    .slice(-10);
+
+
+            // ------------------------------------------------
+            // System instruction
+            // ------------------------------------------------
+
+            const systemInstruction = `
+
+You are ${aiName}, the personal AI assistant
+inside an Android application called AIVA.
+
+==================================================
+CURRENT USER LANGUAGE
+==================================================
+
+${responseStyle.language}
+
+CURRENT SCRIPT:
+${responseStyle.script}
 
 USER PREFERRED LANGUAGE:
 ${preferredLanguage}
 
-CURRENT MESSAGE LANGUAGE HINT:
-${languageHint}
+==================================================
+MOST IMPORTANT LANGUAGE RULE
+==================================================
 
-VERY IMPORTANT LANGUAGE RULE:
+The user's LATEST MESSAGE has the highest priority.
 
-Always answer in the SAME LANGUAGE as the user's LATEST MESSAGE.
+Always answer in the same language AND writing style
+used by the latest user message.
 
-The latest user message has higher priority than the saved preferred language.
+Never blindly follow the saved preferred language.
 
-Examples:
+${languageInstruction}
 
-- User asks in Hindi Devanagari → answer in Hindi Devanagari.
-- User asks in Marathi Devanagari → answer in Marathi Devanagari.
-- User asks in English → answer in English.
-- User asks in Hinglish → answer in natural Hinglish.
-- User mixes Hindi + English → answer naturally in Hinglish.
-- User writes Marathi using English/Roman letters → understand Marathi and answer in natural Marathi/Roman Marathi when appropriate.
-- Do NOT blindly use the preferred language if the latest message is clearly written in another language.
+==================================================
+IMPORTANT
+==================================================
 
-Do not translate the user's question unless they ask for translation.
+If the user writes Hindi using English/Roman letters,
+reply using English/Roman letters.
 
-PERSONALITY:
+If the user writes Marathi using English/Roman letters,
+reply using English/Roman letters.
+
+Do NOT automatically convert Roman Hindi/Hinglish
+into Devanagari.
+
+Do NOT automatically convert Roman Marathi
+into Devanagari.
+
+Preserve the user's conversational style.
+
+==================================================
+PERSONALITY
+==================================================
+
 - Friendly
 - Natural
 - Helpful
 - Intelligent
 - Warm
 - Conversational
-- Concise
-- Like a modern personal AI assistant
+- Personal AI assistant
+- Understand Indian conversational language
+- Understand Hindi, Marathi, English and Hinglish
 
-RESPONSE STYLE:
-- Give the direct answer first.
-- Avoid unnecessary long explanations.
-- For simple questions, keep the answer short.
-- For complex questions, explain clearly with useful details.
-- Understand Hindi, Marathi, English and Hinglish.
-- Understand normal Indian conversational language.
+==================================================
+RESPONSE LENGTH
+==================================================
 
-IMPORTANT ACTION RULE:
-Do not claim that an Android action was completed unless the application actually performed that action.
+For simple questions:
+Give a short and useful answer.
 
-For example:
-- Do not say "YouTube opened" unless the app actually opened YouTube.
-- Do not say "I sent the message" unless a connected tool actually sent it.
-- Do not say "I made the call" unless the application actually made the call.
-- Do not pretend to control the phone.
+For normal questions:
+Give a clear explanation.
 
-If a device capability is not connected yet, clearly say that the capability is not connected yet.
+For complex questions:
+Give structured details.
 
-CURRENT USER MESSAGE:
+Avoid unnecessary repetition.
+
+==================================================
+ANDROID ACTION SAFETY
+==================================================
+
+Do not claim an Android action was completed
+unless the application actually performed it.
+
+Do not pretend to:
+
+- Open an app
+- Send a message
+- Make a call
+- Change a phone setting
+- Lock/unlock the device
+- Play music
+- Create a reminder
+
+unless an actual connected tool performed that action.
+
+==================================================
+CURRENT USER MESSAGE
+==================================================
+
 ${message}
+
 `;
 
-        // --------------------------------------------------
-        // CONVERSATION
-        // --------------------------------------------------
 
-        const contents = [];
+            // ------------------------------------------------
+            // Gemini conversation
+            // ------------------------------------------------
 
-        for (const item of safeConversation) {
+            const contents = [];
+
+
+            for (
+                const item
+                of safeConversation
+            ) {
+
+                contents.push({
+
+                    role:
+                        item.isUser
+                            ? "user"
+                            : "model",
+
+                    parts: [
+                        {
+                            text: item.text
+                        }
+                    ]
+
+                });
+            }
+
+
+            // Current message
+
             contents.push({
-                role: item.isUser
-                    ? "user"
-                    : "model",
+
+                role: "user",
 
                 parts: [
                     {
-                        text: item.text
+                        text: message
                     }
                 ]
-            });
-        }
 
-        contents.push({
-            role: "user",
-            parts: [
-                {
-                    text: message
-                }
-            ]
-        });
-
-        // --------------------------------------------------
-        // GEMINI REQUEST
-        // --------------------------------------------------
-
-        const response =
-            await ai.models.generateContent({
-                model: GEMINI_MODEL,
-
-                contents: contents,
-
-                config: {
-                    systemInstruction:
-                        systemInstruction,
-
-                    maxOutputTokens: 400,
-
-                    temperature: 0.6
-                }
             });
 
-        const outputText =
-            response.text
-                ? response.text.trim()
-                : "";
 
-        if (!outputText) {
-            return res.status(502).json({
+            // ------------------------------------------------
+            // Gemini request
+            // ------------------------------------------------
+
+            const response =
+                await ai.models.generateContent({
+
+                    model: GEMINI_MODEL,
+
+                    contents: contents,
+
+                    config: {
+
+                        systemInstruction:
+                            systemInstruction,
+
+                        maxOutputTokens: 500,
+
+                        temperature: 0.5
+
+                    }
+
+                });
+
+
+            // ------------------------------------------------
+            // Response
+            // ------------------------------------------------
+
+            const outputText =
+                response.text
+                    ? response.text.trim()
+                    : "";
+
+
+            if (!outputText) {
+
+                return res.status(502).json({
+
+                    success: false,
+
+                    error:
+                        "Gemini returned an empty response."
+
+                });
+            }
+
+
+            return res.json({
+
+                success: true,
+
+                response:
+                    outputText
+
+            });
+
+
+        } catch (error) {
+
+            console.error(
+                "AIVA GEMINI ERROR:",
+                error?.message || error
+            );
+
+
+            return res.status(500).json({
+
                 success: false,
-                error: "Gemini returned an empty response."
+
+                error:
+                    "AIVA AI service temporarily unavailable."
+
             });
         }
-
-        return res.json({
-            success: true,
-            response: outputText
-        });
-
-    } catch (error) {
-
-        console.error(
-            "AIVA GEMINI ERROR:",
-            error?.message || error
-        );
-
-        return res.status(500).json({
-            success: false,
-            error:
-                "AIVA AI service temporarily unavailable."
-        });
     }
-});
+);
 
-// --------------------------------------------------
+
+// ============================================================
 // START SERVER
-// --------------------------------------------------
+// ============================================================
 
 app.listen(
     PORT,
@@ -321,5 +790,6 @@ app.listen(
         console.log(
             `Gemini model: ${GEMINI_MODEL}`
         );
+
     }
 );
