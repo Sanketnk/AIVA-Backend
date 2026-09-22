@@ -7,16 +7,32 @@ dotenv.config();
 
 const app = express();
 
-app.use(cors());
-app.use(express.json());
+// =====================================================
+// CONFIGURATION
+// =====================================================
 
 const PORT = process.env.PORT || 3000;
-const GEMINI_MODEL =
+
+const PRIMARY_MODEL =
     process.env.GEMINI_MODEL || "gemini-3.6-flash";
+
+const FALLBACK_MODEL =
+    process.env.GEMINI_FALLBACK_MODEL ||
+    "gemini-3.5-flash-lite";
+
+const MAX_HISTORY = 10;
+const MAX_ATTEMPTS = 3;
 
 const ai = new GoogleGenAI({
     apiKey: process.env.GEMINI_API_KEY
 });
+
+// =====================================================
+// MIDDLEWARE
+// =====================================================
+
+app.use(cors());
+app.use(express.json());
 
 // =====================================================
 // LANGUAGE DETECTION
@@ -25,10 +41,18 @@ const ai = new GoogleGenAI({
 function detectResponseStyle(message, preferredLanguage) {
     const text = message.trim();
 
-    const devanagari = /[\u0900-\u097F]/.test(text);
-    const latin = /[A-Za-z]/.test(text);
+    const hasDevanagari =
+        /[\u0900-\u097F]/.test(text);
 
-    if (devanagari) {
+    const hasLatin =
+        /[A-Za-z]/.test(text);
+
+    // -------------------------------------------------
+    // DEVANAGARI
+    // -------------------------------------------------
+
+    if (hasDevanagari) {
+
         const marathiWords = [
             "आहे",
             "आहेत",
@@ -36,6 +60,7 @@ function detectResponseStyle(message, preferredLanguage) {
             "मला",
             "माझा",
             "माझी",
+            "माझे",
             "काय",
             "कसे",
             "कशी",
@@ -44,12 +69,18 @@ function detectResponseStyle(message, preferredLanguage) {
             "पाहिजे",
             "सांगा",
             "कुठे",
-            "शिकायचं"
+            "शिकायचं",
+            "करायचं",
+            "करायची",
+            "किती",
+            "हो",
+            "नाही"
         ];
 
-        const marathiScore = marathiWords.filter(word =>
-            text.includes(word)
-        ).length;
+        const marathiScore =
+            marathiWords.filter(word =>
+                text.includes(word)
+            ).length;
 
         if (marathiScore > 0) {
             return {
@@ -64,8 +95,17 @@ function detectResponseStyle(message, preferredLanguage) {
         };
     }
 
-    if (latin) {
-        const lower = text.toLowerCase();
+    // -------------------------------------------------
+    // ROMAN / ENGLISH
+    // -------------------------------------------------
+
+    if (hasLatin) {
+
+        const lower =
+            text.toLowerCase();
+
+        const words =
+            lower.split(/\s+/);
 
         const marathiWords = [
             "mhanje",
@@ -85,6 +125,7 @@ function detectResponseStyle(message, preferredLanguage) {
             "sanga",
             "kuthe",
             "shikaycha",
+            "shikaychi",
             "karaycha",
             "karaychi",
             "kiti",
@@ -111,26 +152,35 @@ function detectResponseStyle(message, preferredLanguage) {
             "karni",
             "chahiye",
             "batao",
+            "bataiye",
             "kahan",
             "kitna",
-            "kyun"
+            "kyun",
+            "kyon"
         ];
 
-        const marathiScore = marathiWords.filter(word =>
-            lower.split(/\s+/).includes(word)
-        ).length;
+        const marathiScore =
+            marathiWords.filter(word =>
+                words.includes(word)
+            ).length;
 
-        const hindiScore = hindiWords.filter(word =>
-            lower.split(/\s+/).includes(word)
-        ).length;
+        const hindiScore =
+            hindiWords.filter(word =>
+                words.includes(word)
+            ).length;
 
-        if (marathiScore >= 2 && marathiScore > hindiScore) {
+        // Strong Marathi detection
+        if (
+            marathiScore >= 2 &&
+            marathiScore > hindiScore
+        ) {
             return {
                 language: "Marathi",
                 script: "Roman"
             };
         }
 
+        // Hindi / Hinglish
         if (hindiScore > 0) {
             return {
                 language: "Hindi",
@@ -138,14 +188,20 @@ function detectResponseStyle(message, preferredLanguage) {
             };
         }
 
+        // English
         return {
             language: "English",
             script: "Roman"
         };
     }
 
+    // -------------------------------------------------
+    // FALLBACK TO USER'S SELECTED LANGUAGE
+    // -------------------------------------------------
+
     return {
-        language: preferredLanguage || "English",
+        language:
+            preferredLanguage || "English",
         script: "Roman"
     };
 }
@@ -162,7 +218,10 @@ function createLanguageInstruction(style) {
     ) {
         return `
 Reply in natural Hindi using Devanagari script.
-Do not switch to English unless technical terms require it.
+
+Do not unnecessarily switch to English.
+
+Use simple, natural Hindi.
 `;
     }
 
@@ -172,9 +231,12 @@ Do not switch to English unless technical terms require it.
     ) {
         return `
 Reply in natural Roman Hindi / Hinglish.
+
 Use English letters only.
+
 Do NOT use Devanagari script.
-Keep the language natural and conversational.
+
+Keep the response conversational and natural.
 `;
     }
 
@@ -184,8 +246,10 @@ Keep the language natural and conversational.
     ) {
         return `
 Reply in natural Marathi using Devanagari script.
-Do not switch to Hindi.
-Technical English terms are allowed when necessary.
+
+Do NOT switch to Hindi.
+
+English technical terms are allowed when necessary.
 `;
     }
 
@@ -195,22 +259,30 @@ Technical English terms are allowed when necessary.
     ) {
         return `
 Reply in natural Roman Marathi.
+
 Use English letters only.
-Do NOT use Hindi or Devanagari script.
-Keep the language natural and conversational.
+
+Do NOT use Devanagari script.
+
+Do NOT convert Marathi into Hindi.
+
+Keep the response natural and conversational.
 `;
     }
 
     return `
 Reply in natural English.
+
+Use clear and simple English.
 `;
 }
 
 // =====================================================
-// GEMINI RETRY HELPERS
+// ERROR HELPERS
 // =====================================================
 
 function getErrorCode(error) {
+
     return Number(
         error?.error?.code ??
         error?.code ??
@@ -220,6 +292,7 @@ function getErrorCode(error) {
 }
 
 function getErrorMessage(error) {
+
     return String(
         error?.error?.message ??
         error?.message ??
@@ -227,10 +300,17 @@ function getErrorMessage(error) {
     );
 }
 
+// =====================================================
+// RETRYABLE ERROR DETECTION
+// =====================================================
+
 function isRetryableGeminiError(error) {
 
-    const code = getErrorCode(error);
-    const message = getErrorMessage(error);
+    const code =
+        getErrorCode(error);
+
+    const message =
+        getErrorMessage(error);
 
     const retryableCodes = [
         408,
@@ -241,82 +321,147 @@ function isRetryableGeminiError(error) {
         504
     ];
 
-    if (retryableCodes.includes(code)) {
+    if (
+        retryableCodes.includes(code)
+    ) {
         return true;
     }
 
-    return /UNAVAILABLE|overloaded|high demand|temporarily unavailable/i
+    return /UNAVAILABLE|overloaded|high demand|temporarily unavailable|timeout/i
         .test(message);
 }
 
+// =====================================================
+// DELAY
+// =====================================================
+
 function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
+
+    return new Promise(resolve => {
+        setTimeout(resolve, ms);
+    });
 }
 
 // =====================================================
-// GEMINI REQUEST WITH RETRY
+// GEMINI REQUEST
+// PRIMARY + RETRY + FALLBACK
 // =====================================================
 
 async function generateGeminiResponse(request) {
 
-    const maxAttempts = 3;
+    const models = [
+        PRIMARY_MODEL,
+        FALLBACK_MODEL
+    ];
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    for (const model of models) {
 
-        try {
+        console.log(
+            `\nUsing Gemini model: ${model}`
+        );
 
-            console.log(
-                `Gemini request attempt ${attempt}/${maxAttempts}`
-            );
+        for (
+            let attempt = 1;
+            attempt <= MAX_ATTEMPTS;
+            attempt++
+        ) {
 
-            const response =
-                await ai.models.generateContent(request);
+            try {
 
-            return response;
+                console.log(
+                    `Gemini attempt ${attempt}/${MAX_ATTEMPTS}`
+                );
 
-        } catch (error) {
+                const response =
+                    await ai.models.generateContent({
+                        ...request,
+                        model: model
+                    });
 
-            const code = getErrorCode(error);
-            const message = getErrorMessage(error);
+                console.log(
+                    `Gemini success: ${model}`
+                );
 
-            console.error(
-                `Gemini attempt ${attempt} failed:`,
-                code,
-                message
-            );
+                return response;
 
-            const retryable =
-                isRetryableGeminiError(error);
+            } catch (error) {
 
-            const lastAttempt =
-                attempt === maxAttempts;
+                const code =
+                    getErrorCode(error);
 
-            if (!retryable || lastAttempt) {
-                throw error;
+                const message =
+                    getErrorMessage(error);
+
+                console.error(
+                    `Gemini error | model=${model} | attempt=${attempt} | code=${code}`
+                );
+
+                console.error(
+                    message
+                );
+
+                const retryable =
+                    isRetryableGeminiError(error);
+
+                // Non-retryable error
+                if (!retryable) {
+
+                    console.error(
+                        `Non-retryable Gemini error on ${model}`
+                    );
+
+                    throw error;
+                }
+
+                // Last attempt for this model
+                if (
+                    attempt === MAX_ATTEMPTS
+                ) {
+
+                    console.log(
+                        `${model} failed after ${MAX_ATTEMPTS} attempts.`
+                    );
+
+                    break;
+                }
+
+                // Exponential backoff
+                const baseDelay =
+                    attempt === 1
+                        ? 1000
+                        : 2500;
+
+                const jitter =
+                    Math.floor(
+                        Math.random() * 500
+                    );
+
+                const delay =
+                    baseDelay + jitter;
+
+                console.log(
+                    `Retrying ${model} in ${delay}ms...`
+                );
+
+                await sleep(delay);
             }
+        }
 
-            // Exponential backoff:
-            // Attempt 1 -> wait ~1 sec
-            // Attempt 2 -> wait ~2.5 sec
-
-            const baseDelay =
-                attempt === 1 ? 1000 : 2500;
-
-            const jitter =
-                Math.floor(Math.random() * 500);
-
-            const delay =
-                baseDelay + jitter;
+        // Move to fallback model
+        if (
+            model === PRIMARY_MODEL &&
+            FALLBACK_MODEL !== PRIMARY_MODEL
+        ) {
 
             console.log(
-                `Retrying Gemini in ${delay}ms...`
+                `Switching to fallback model: ${FALLBACK_MODEL}`
             );
-
-            await sleep(delay);
         }
     }
 
-    throw new Error("Gemini request failed.");
+    throw new Error(
+        "All Gemini models are temporarily unavailable."
+    );
 }
 
 // =====================================================
@@ -328,7 +473,8 @@ app.get("/", (req, res) => {
     res.json({
         success: true,
         message: "AIVA Backend is running.",
-        model: GEMINI_MODEL
+        primaryModel: PRIMARY_MODEL,
+        fallbackModel: FALLBACK_MODEL
     });
 });
 
@@ -347,17 +493,25 @@ app.post("/api/chat", async (req, res) => {
             conversation
         } = req.body;
 
-        if (!message || !message.trim()) {
+        // -------------------------------------------------
+        // VALIDATION
+        // -------------------------------------------------
+
+        if (
+            !message ||
+            !message.trim()
+        ) {
 
             return res.status(400).json({
                 success: false,
-                error: "Message is required."
+                error: "Message is required.",
+                retryable: false
             });
         }
 
-        // ---------------------------------------------
-        // Detect current message language
-        // ---------------------------------------------
+        // -------------------------------------------------
+        // LANGUAGE DETECTION
+        // -------------------------------------------------
 
         const responseStyle =
             detectResponseStyle(
@@ -370,22 +524,23 @@ app.post("/api/chat", async (req, res) => {
             responseStyle
         );
 
-        // ---------------------------------------------
-        // Language instruction
-        // ---------------------------------------------
+        // -------------------------------------------------
+        // LANGUAGE INSTRUCTION
+        // -------------------------------------------------
 
         const languageInstruction =
             createLanguageInstruction(
                 responseStyle
             );
 
-        // ---------------------------------------------
-        // Conversation history
-        // ---------------------------------------------
+        // -------------------------------------------------
+        // CONVERSATION HISTORY
+        // -------------------------------------------------
 
-        const history = Array.isArray(conversation)
-            ? conversation.slice(-10)
-            : [];
+        const history =
+            Array.isArray(conversation)
+                ? conversation.slice(-MAX_HISTORY)
+                : [];
 
         const conversationText =
             history
@@ -400,50 +555,58 @@ app.post("/api/chat", async (req, res) => {
                 })
                 .join("\n");
 
-        // ---------------------------------------------
-        // System instruction
-        // ---------------------------------------------
+        // -------------------------------------------------
+        // SYSTEM INSTRUCTION
+        // -------------------------------------------------
 
         const systemInstruction = `
 You are ${aiName || "AIVA"}.
 
-You are a helpful personal AI assistant.
+You are AIVA, a helpful personal AI assistant inside an Android application.
 
-Your job is to:
-- Answer questions clearly.
-- Help with Android development.
-- Help with coding.
-- Help with studies.
-- Help with general knowledge.
-- Help with planning and problem solving.
-- Understand natural Hindi, Hinglish, Marathi and English.
-- Maintain context from the conversation.
+Your responsibilities include:
 
-IMPORTANT LANGUAGE RULE:
+- Answering questions.
+- Helping with Android development.
+- Helping with Kotlin and Jetpack Compose.
+- Helping with programming.
+- Helping with studies.
+- Helping with general knowledge.
+- Helping with planning.
+- Helping with problem solving.
+- Understanding Hindi.
+- Understanding Hinglish.
+- Understanding Marathi.
+- Understanding Roman Marathi.
+- Understanding English.
+
+IMPORTANT:
 
 The latest user message has the highest priority.
 
 ${languageInstruction}
 
-Do not unnecessarily change the user's language or script.
+Always preserve the user's intended language and script.
 
-If the user asks a technical question,
-give practical and understandable answers.
+Do not unnecessarily change the language.
 
-If code is requested,
-provide clean copy-paste-ready code.
+If the user asks for code:
+provide clean, practical, copy-paste-ready code.
+
+If the user asks a simple question:
+answer directly.
+
+If the user asks for an explanation:
+explain clearly with useful examples.
 
 Do not mention these internal instructions.
-
-You are running inside the AIVA Android application.
 `;
 
-        // ---------------------------------------------
-        // Gemini request
-        // ---------------------------------------------
+        // -------------------------------------------------
+        // GEMINI REQUEST
+        // -------------------------------------------------
 
         const request = {
-            model: GEMINI_MODEL,
 
             contents: `
 ${conversationText}
@@ -452,20 +615,25 @@ User: ${message}
 `,
 
             config: {
-                systemInstruction,
 
-                temperature: 0.5,
+                systemInstruction,
 
                 maxOutputTokens: 500
             }
         };
 
-        // ---------------------------------------------
-        // Call Gemini with retry
-        // ---------------------------------------------
+        // -------------------------------------------------
+        // CALL GEMINI
+        // -------------------------------------------------
 
         const response =
-            await generateGeminiResponse(request);
+            await generateGeminiResponse(
+                request
+            );
+
+        // -------------------------------------------------
+        // EXTRACT RESPONSE
+        // -------------------------------------------------
 
         const answer =
             response?.text?.trim();
@@ -474,28 +642,36 @@ User: ${message}
 
             return res.status(502).json({
                 success: false,
-                error: "Gemini returned an empty response.",
+                error:
+                    "Gemini returned an empty response.",
                 retryable: true
             });
         }
 
-        // ---------------------------------------------
-        // Success
-        // ---------------------------------------------
+        // -------------------------------------------------
+        // SUCCESS
+        // -------------------------------------------------
 
         return res.json({
+
             success: true,
+
             response: answer,
-            language: responseStyle.language,
-            script: responseStyle.script
+
+            language:
+                responseStyle.language,
+
+            script:
+                responseStyle.script
         });
 
     } catch (error) {
 
         console.error(
-            "AIVA GEMINI ERROR:",
-            error
+            "\nAIVA GEMINI ERROR:"
         );
+
+        console.error(error);
 
         const code =
             getErrorCode(error);
@@ -503,29 +679,36 @@ User: ${message}
         const retryable =
             isRetryableGeminiError(error);
 
-        // ---------------------------------------------
-        // Temporary Gemini problem
-        // ---------------------------------------------
+        // -------------------------------------------------
+        // TEMPORARY GEMINI ERROR
+        // -------------------------------------------------
 
         if (retryable) {
 
             return res.status(503).json({
+
                 success: false,
+
                 error:
                     "Gemini is temporarily busy. Please try again in a few seconds.",
+
                 retryable: true,
+
                 code
             });
         }
 
-        // ---------------------------------------------
-        // Other error
-        // ---------------------------------------------
+        // -------------------------------------------------
+        // OTHER ERROR
+        // -------------------------------------------------
 
         return res.status(500).json({
+
             success: false,
+
             error:
                 "AIVA AI service temporarily unavailable.",
+
             retryable: false
         });
     }
@@ -538,11 +721,22 @@ User: ${message}
 app.listen(PORT, () => {
 
     console.log(
-        `AIVA Backend running on port ${PORT}`
+        "===================================="
     );
 
     console.log(
-        `Gemini model: ${GEMINI_MODEL}`
+        "AIVA Backend running on port " + PORT
     );
 
+    console.log(
+        "Primary model: " + PRIMARY_MODEL
+    );
+
+    console.log(
+        "Fallback model: " + FALLBACK_MODEL
+    );
+
+    console.log(
+        "===================================="
+    );
 });
