@@ -7,511 +7,69 @@ dotenv.config();
 
 const app = express();
 
-// =====================================================
-// CONFIGURATION
-// =====================================================
-
-const PORT = process.env.PORT || 3000;
-
-const PRIMARY_MODEL =
-    process.env.GEMINI_MODEL || "gemini-3.6-flash";
-
-const FALLBACK_MODEL =
-    process.env.GEMINI_FALLBACK_MODEL ||
-    "gemini-3.5-flash-lite";
-
-const MAX_HISTORY = 10;
-const MAX_ATTEMPTS = 3;
-const MAX_OUTPUT_TOKENS = 1200;
-
-const ai = new GoogleGenAI({
-    apiKey: process.env.GEMINI_API_KEY
-});
-
-// =====================================================
-// MIDDLEWARE
-// =====================================================
-
 app.use(cors());
 app.use(express.json());
 
-// =====================================================
-// LANGUAGE DETECTION
-// =====================================================
+const PORT = process.env.PORT || 3000;
 
-function detectResponseStyle(message, preferredLanguage) {
+const GEMINI_API_KEY =
+    process.env.GEMINI_API_KEY;
 
-    const text = message.trim();
+const GEMINI_MODEL =
+    process.env.GEMINI_MODEL ||
+    "gemini-3.6-flash";
 
-    const hasDevanagari =
-        /[\u0900-\u097F]/.test(text);
-
-    const hasLatin =
-        /[A-Za-z]/.test(text);
-
-    // =================================================
-    // DEVANAGARI
-    // =================================================
-
-    if (hasDevanagari) {
-
-        const marathiWords = [
-            "आहे",
-            "आहेत",
-            "म्हणजे",
-            "मला",
-            "माझा",
-            "माझी",
-            "माझे",
-            "काय",
-            "कसे",
-            "कशी",
-            "तुम्ही",
-            "तुला",
-            "पाहिजे",
-            "सांगा",
-            "कुठे",
-            "शिकायचं",
-            "शिकायचे",
-            "करायचं",
-            "करायची",
-            "किती",
-            "हो",
-            "नाही"
-        ];
-
-        const marathiScore =
-            marathiWords.filter(word =>
-                text.includes(word)
-            ).length;
-
-        if (marathiScore > 0) {
-
-            return {
-                language: "Marathi",
-                script: "Devanagari"
-            };
-        }
-
-        return {
-            language: "Hindi",
-            script: "Devanagari"
-        };
-    }
-
-    // =================================================
-    // ROMAN / ENGLISH
-    // =================================================
-
-    if (hasLatin) {
-
-        const lower =
-            text.toLowerCase();
-
-        const words =
-            lower.split(/\s+/);
-
-        const marathiWords = [
-            "mhanje",
-            "mala",
-            "majha",
-            "majhi",
-            "majhe",
-            "ahe",
-            "aahe",
-            "ahet",
-            "kay",
-            "kasa",
-            "kashi",
-            "tumhi",
-            "tula",
-            "pahije",
-            "sanga",
-            "kuthe",
-            "shikaycha",
-            "shikaychi",
-            "shikayche",
-            "karaycha",
-            "karaychi",
-            "karayche",
-            "kiti",
-            "kaay",
-            "ho",
-            "nahi",
-            "mhanun",
-            "pan",
-            "aani",
-            "tumhala",
-            "tyala",
-            "tyachi",
-            "tyache"
-        ];
-
-        const hindiWords = [
-            "mujhe",
-            "mujhko",
-            "mera",
-            "meri",
-            "mere",
-            "tum",
-            "tumhe",
-            "aap",
-            "aapko",
-            "kya",
-            "kaise",
-            "kaisa",
-            "hai",
-            "hain",
-            "karna",
-            "karni",
-            "karne",
-            "chahiye",
-            "batao",
-            "bataiye",
-            "kahan",
-            "kitna",
-            "kyun",
-            "kyon",
-            "mujhse",
-            "aapka",
-            "aapki",
-            "aapke",
-            "mujhko"
-        ];
-
-        const marathiScore =
-            marathiWords.filter(word =>
-                words.includes(word)
-            ).length;
-
-        const hindiScore =
-            hindiWords.filter(word =>
-                words.includes(word)
-            ).length;
-
-        // Strong Marathi signal
-        if (
-            marathiScore >= 2 &&
-            marathiScore > hindiScore
-        ) {
-
-            return {
-                language: "Marathi",
-                script: "Roman"
-            };
-        }
-
-        // Hindi / Hinglish
-        if (hindiScore > 0) {
-
-            return {
-                language: "Hindi",
-                script: "Roman"
-            };
-        }
-
-        // English
-        return {
-            language: "English",
-            script: "Roman"
-        };
-    }
-
-    // =================================================
-    // FALLBACK
-    // =================================================
-
-    return {
-        language:
-            preferredLanguage || "English",
-        script: "Roman"
-    };
-}
-
-// =====================================================
-// LANGUAGE INSTRUCTION
-// =====================================================
-
-function createLanguageInstruction(style) {
-
-    if (
-        style.language === "Hindi" &&
-        style.script === "Devanagari"
-    ) {
-
-        return `
-LANGUAGE:
-Reply in natural Hindi using Devanagari script.
-
-Do not unnecessarily switch to English.
-
-Keep technical English terms only when they are useful.
-`;
-    }
-
-    if (
-        style.language === "Hindi" &&
-        style.script === "Roman"
-    ) {
-
-        return `
-LANGUAGE:
-Reply in natural Roman Hindi / Hinglish.
-
-Use English letters only.
-
-Do NOT use Devanagari script.
-
-Do NOT convert the answer into pure English.
-
-Keep the language natural and conversational.
-`;
-    }
-
-    if (
-        style.language === "Marathi" &&
-        style.script === "Devanagari"
-    ) {
-
-        return `
-LANGUAGE:
-Reply in natural Marathi using Devanagari script.
-
-Do NOT switch to Hindi.
-
-Technical English terms are allowed when necessary.
-
-Keep the response naturally Marathi.
-`;
-    }
-
-    if (
-        style.language === "Marathi" &&
-        style.script === "Roman"
-    ) {
-
-        return `
-LANGUAGE:
-Reply in natural Roman Marathi.
-
-Use English letters only.
-
-Do NOT use Devanagari script.
-
-Do NOT convert Marathi into Hindi.
-
-Keep the response naturally Marathi.
-`;
-    }
-
-    return `
-LANGUAGE:
-Reply in natural English.
-
-Use clear and easy-to-understand English.
-`;
-}
-
-// =====================================================
-// ERROR HELPERS
-// =====================================================
-
-function getErrorCode(error) {
-
-    return Number(
-        error?.error?.code ??
-        error?.code ??
-        error?.status ??
-        0
+if (!GEMINI_API_KEY) {
+    console.error(
+        "GEMINI_API_KEY is missing."
     );
 }
 
-function getErrorMessage(error) {
+const ai = new GoogleGenAI({
+    apiKey: GEMINI_API_KEY
+});
 
-    return String(
-        error?.error?.message ??
-        error?.message ??
-        ""
-    );
-}
+/* ---------------------------------------------------------
+   SYSTEM INSTRUCTION
+--------------------------------------------------------- */
 
-// =====================================================
-// RETRYABLE ERROR
-// =====================================================
+const SYSTEM_INSTRUCTION = `
+You are AIVA, a personal AI assistant.
 
-function isRetryableGeminiError(error) {
+Your job is to have natural, helpful and intelligent conversations
+with the user.
 
-    const code =
-        getErrorCode(error);
+Important rules:
 
-    const message =
-        getErrorMessage(error);
+1. Remember information from the conversation history provided to you.
+2. If the user tells you their name, preferences, plans or other information,
+   use that information later in the same conversation.
+3. Do not say that information is unavailable if it is present in the
+   conversation history.
+4. Understand Hindi, English, Hinglish, Marathi, Roman Hindi and Roman Marathi.
+5. Reply naturally in the language used by the user.
+6. Do not unnecessarily repeat greetings.
+7. Be concise when a short answer is enough.
+8. Give detailed answers when the user asks for details.
+9. You are AIVA One AI, the central intelligence of the AIVA application.
+`;
 
-    const retryableCodes = [
-        408,
-        429,
-        500,
-        502,
-        503,
-        504
-    ];
-
-    if (
-        retryableCodes.includes(code)
-    ) {
-        return true;
-    }
-
-    return /UNAVAILABLE|overloaded|high demand|temporarily unavailable|timeout/i
-        .test(message);
-}
-
-// =====================================================
-// SLEEP
-// =====================================================
-
-function sleep(ms) {
-
-    return new Promise(resolve => {
-        setTimeout(resolve, ms);
-    });
-}
-
-// =====================================================
-// GEMINI REQUEST
-// PRIMARY + RETRY + FALLBACK
-// =====================================================
-
-async function generateGeminiResponse(request) {
-
-    const models = [
-        PRIMARY_MODEL,
-        FALLBACK_MODEL
-    ];
-
-    for (const model of models) {
-
-        console.log(
-            `Using Gemini model: ${model}`
-        );
-
-        for (
-            let attempt = 1;
-            attempt <= MAX_ATTEMPTS;
-            attempt++
-        ) {
-
-            try {
-
-                console.log(
-                    `Gemini attempt ${attempt}/${MAX_ATTEMPTS}`
-                );
-
-                const response =
-                    await ai.models.generateContent({
-                        ...request,
-                        model: model
-                    });
-
-                console.log(
-                    `Gemini success: ${model}`
-                );
-
-                return response;
-
-            } catch (error) {
-
-                const code =
-                    getErrorCode(error);
-
-                const message =
-                    getErrorMessage(error);
-
-                console.error(
-                    `Gemini error | model=${model} | attempt=${attempt} | code=${code}`
-                );
-
-                console.error(message);
-
-                const retryable =
-                    isRetryableGeminiError(error);
-
-                if (!retryable) {
-                    throw error;
-                }
-
-                if (
-                    attempt === MAX_ATTEMPTS
-                ) {
-
-                    console.log(
-                        `${model} failed after ${MAX_ATTEMPTS} attempts.`
-                    );
-
-                    break;
-                }
-
-                const baseDelay =
-                    attempt === 1
-                        ? 1000
-                        : 2500;
-
-                const jitter =
-                    Math.floor(
-                        Math.random() * 500
-                    );
-
-                const delay =
-                    baseDelay + jitter;
-
-                console.log(
-                    `Retrying ${model} in ${delay}ms...`
-                );
-
-                await sleep(delay);
-            }
-        }
-
-        if (
-            model === PRIMARY_MODEL &&
-            FALLBACK_MODEL !== PRIMARY_MODEL
-        ) {
-
-            console.log(
-                `Switching to fallback model: ${FALLBACK_MODEL}`
-            );
-        }
-    }
-
-    throw new Error(
-        "All Gemini models are temporarily unavailable."
-    );
-}
-
-// =====================================================
-// HEALTH CHECK
-// =====================================================
+/* ---------------------------------------------------------
+   HOME
+--------------------------------------------------------- */
 
 app.get("/", (req, res) => {
 
     res.json({
-
-        success: true,
-
-        message:
-            "AIVA Backend is running.",
-
-        primaryModel:
-            PRIMARY_MODEL,
-
-        fallbackModel:
-            FALLBACK_MODEL
+        status: "online",
+        service: "AIVA Backend",
+        model: GEMINI_MODEL
     });
 });
 
-// =====================================================
-// CHAT API
-// =====================================================
+/* ---------------------------------------------------------
+   CHAT
+--------------------------------------------------------- */
 
 app.post("/api/chat", async (req, res) => {
 
@@ -524,315 +82,157 @@ app.post("/api/chat", async (req, res) => {
             conversation
         } = req.body;
 
-        // =================================================
-        // VALIDATION
-        // =================================================
-
         if (
             !message ||
-            !message.trim()
+            typeof message !== "string"
         ) {
 
             return res.status(400).json({
-
-                success: false,
-
-                error:
-                    "Message is required.",
-
-                retryable: false
+                error: "Message is required."
             });
         }
 
-        // =================================================
-        // LANGUAGE DETECTION
-        // =================================================
-
-        const responseStyle =
-            detectResponseStyle(
-                message,
-                language
-            );
-
-        console.log(
-            "AIVA language detection:",
-            responseStyle
-        );
-
-        // =================================================
-        // LANGUAGE INSTRUCTION
-        // =================================================
-
-        const languageInstruction =
-            createLanguageInstruction(
-                responseStyle
-            );
-
-        // =================================================
-        // CONVERSATION HISTORY
-        // =================================================
+        /*
+         * Conversation history received from Android.
+         */
 
         const history =
             Array.isArray(conversation)
-                ? conversation.slice(-MAX_HISTORY)
+                ? conversation
                 : [];
 
-        const conversationText =
-            history
+        /*
+         * Keep only recent messages.
+         */
+
+        const recentHistory =
+            history.slice(-20);
+
+        /*
+         * Convert Android messages into
+         * Gemini conversation format.
+         */
+
+        const contents =
+            recentHistory
+                .filter(item =>
+                    item &&
+                    typeof item.content === "string" &&
+                    item.content.trim().length > 0
+                )
                 .map(item => {
 
-                    const role =
-                        item.isUser
-                            ? "User"
-                            : "AIVA";
+                    return {
+                        role:
+                            item.role === "assistant"
+                                ? "model"
+                                : "user",
 
-                    return `${role}: ${item.text}`;
-                })
-                .join("\n");
+                        parts: [
+                            {
+                                text:
+                                    item.content.trim()
+                            }
+                        ]
+                    };
+                });
 
-        // =================================================
-        // SYSTEM INSTRUCTION
-        // =================================================
+        /*
+         * Safety check:
+         *
+         * MainActivity already sends the current user
+         * message inside conversation.
+         *
+         * If it is missing for any reason, add it.
+         */
 
-        const systemInstruction = `
-You are ${aiName || "AIVA"}.
+        const lastMessage =
+            contents.length > 0
+                ? contents[contents.length - 1]
+                : null;
 
-You are AIVA, a helpful personal AI assistant inside an Android application.
+        const currentMessageAlreadyPresent =
+            lastMessage &&
+            lastMessage.role === "user" &&
+            lastMessage.parts &&
+            lastMessage.parts[0] &&
+            lastMessage.parts[0].text ===
+                message.trim();
 
-Your main purpose is to understand the user naturally
-and provide useful, accurate and practical answers.
+        if (!currentMessageAlreadyPresent) {
 
-You can help with:
-
-- General questions
-- Android development
-- Kotlin
-- Jetpack Compose
-- Programming
-- App development
-- Studies
-- Learning
-- Planning
-- Problem solving
-- Technology
-- Everyday questions
-
-=====================================================
-LANGUAGE
-=====================================================
-
-The latest user message has the highest priority.
-
-${languageInstruction}
-
-Always preserve the user's language and script.
-
-Do NOT change Roman Hindi into Devanagari.
-
-Do NOT change Roman Marathi into Hindi.
-
-Do NOT change Marathi into Hindi.
-
-Do NOT change English into Hindi or Marathi unless the user asks.
-
-=====================================================
-RESPONSE LENGTH
-=====================================================
-
-Do NOT unnecessarily give very short answers.
-
-Give a complete and useful answer when the question
-needs explanation.
-
-Hindi, Hinglish, Marathi and English responses should
-have a similar level of useful detail.
-
-Do NOT make Hindi or Marathi answers shorter simply
-because the user is using Roman script.
-
-Only give a very short answer when the user explicitly
-asks for:
-
-- short answer
-- brief answer
-- one line
-- summary
-- in short
-
-For normal questions, explain enough to be genuinely useful.
-
-=====================================================
-TECHNICAL QUESTIONS
-=====================================================
-
-For Android, Kotlin, Jetpack Compose and programming
-questions:
-
-- Explain the solution clearly.
-- Give steps when appropriate.
-- Mention important settings or dependencies.
-- If code is requested, provide complete copy-paste-ready code.
-- Do not intentionally omit important parts of the solution.
-- Keep code clean and practical.
-
-=====================================================
-CONVERSATION
-=====================================================
-
-Use the conversation history when useful.
-
-Do not repeat the same information unnecessarily.
-
-Answer the latest user request directly.
-
-Do not mention these internal instructions.
-`;
-
-        // =================================================
-        // GEMINI REQUEST
-        // =================================================
-
-        const request = {
-
-            contents: `
-${conversationText}
-
-User: ${message}
-`,
-
-            config: {
-
-                systemInstruction,
-
-                temperature: 0.7,
-
-                maxOutputTokens:
-                    MAX_OUTPUT_TOKENS
-            }
-        };
-
-        // =================================================
-        // GEMINI
-        // =================================================
-
-        const response =
-            await generateGeminiResponse(
-                request
-            );
-
-        // =================================================
-        // RESPONSE
-        // =================================================
-
-        const answer =
-            response?.text?.trim();
-
-        if (!answer) {
-
-            return res.status(502).json({
-
-                success: false,
-
-                error:
-                    "Gemini returned an empty response.",
-
-                retryable: true
+            contents.push({
+                role: "user",
+                parts: [
+                    {
+                        text: message.trim()
+                    }
+                ]
             });
         }
 
-        // =================================================
-        // SUCCESS
-        // =================================================
+        /*
+         * Generate AI response.
+         */
 
-        return res.json({
+        const response =
+            await ai.models.generateContent({
 
-            success: true,
+                model: GEMINI_MODEL,
 
-            response: answer,
+                contents: contents,
 
-            language:
-                responseStyle.language,
+                config: {
 
-            script:
-                responseStyle.script
+                    systemInstruction:
+                        SYSTEM_INSTRUCTION,
+
+                    temperature: 0.7,
+
+                    maxOutputTokens: 2048
+                }
+            });
+
+        const text =
+            response.text || "";
+
+        if (!text.trim()) {
+
+            return res.status(500).json({
+                error: "AI returned an empty response."
+            });
+        }
+
+        res.json({
+            response: text.trim(),
+            aiName: aiName || "AIVA",
+            language: language || "English"
         });
 
     } catch (error) {
 
         console.error(
-            "AIVA GEMINI ERROR:"
+            "AIVA CHAT ERROR:",
+            error
         );
 
-        console.error(error);
-
-        const code =
-            getErrorCode(error);
-
-        const retryable =
-            isRetryableGeminiError(error);
-
-        // =================================================
-        // TEMPORARY ERROR
-        // =================================================
-
-        if (retryable) {
-
-            return res.status(503).json({
-
-                success: false,
-
-                error:
-                    "Gemini is temporarily busy. Please try again in a few seconds.",
-
-                retryable: true,
-
-                code
-            });
-        }
-
-        // =================================================
-        // OTHER ERROR
-        // =================================================
-
-        return res.status(500).json({
-
-            success: false,
-
+        res.status(500).json({
             error:
-                "AIVA AI service temporarily unavailable.",
-
-            retryable: false
+                "AIVA could not generate a response.",
+            details:
+                error.message || "Unknown error"
         });
     }
 });
 
-// =====================================================
-// START SERVER
-// =====================================================
+/* ---------------------------------------------------------
+   SERVER
+--------------------------------------------------------- */
 
 app.listen(PORT, () => {
-
-    console.log(
-        "========================================"
-    );
 
     console.log(
         `AIVA Backend running on port ${PORT}`
     );
 
-    console.log(
-        `Primary model: ${PRIMARY_MODEL}`
-    );
-
-    console.log(
-        `Fallback model: ${FALLBACK_MODEL}`
-    );
-
-    console.log(
-        `Max output tokens: ${MAX_OUTPUT_TOKENS}`
-    );
-
-    console.log(
-        "========================================"
-    );
 });
