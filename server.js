@@ -7,8 +7,9 @@ dotenv.config();
 
 const app = express();
 
-app.use(cors());
-app.use(express.json());
+/* =========================================================
+   CONFIGURATION
+========================================================= */
 
 const PORT = process.env.PORT || 3000;
 
@@ -19,9 +20,30 @@ const GEMINI_MODEL =
     process.env.GEMINI_MODEL ||
     "gemini-3.6-flash";
 
+const GEMINI_FALLBACK_MODEL =
+    process.env.GEMINI_FALLBACK_MODEL ||
+    "gemini-3.5-flash-lite";
+
+/* =========================================================
+   MIDDLEWARE
+========================================================= */
+
+app.use(cors());
+
+app.use(
+    express.json({
+        limit: "1mb"
+    })
+);
+
+/* =========================================================
+   GEMINI CLIENT
+========================================================= */
+
 if (!GEMINI_API_KEY) {
+
     console.error(
-        "GEMINI_API_KEY is missing."
+        "ERROR: GEMINI_API_KEY is missing."
     );
 }
 
@@ -29,210 +51,377 @@ const ai = new GoogleGenAI({
     apiKey: GEMINI_API_KEY
 });
 
-/* ---------------------------------------------------------
-   SYSTEM INSTRUCTION
---------------------------------------------------------- */
+/* =========================================================
+   AIVA SYSTEM INSTRUCTION
+========================================================= */
 
 const SYSTEM_INSTRUCTION = `
-You are AIVA, a personal AI assistant.
+You are AIVA One AI.
 
-Your job is to have natural, helpful and intelligent conversations
-with the user.
+You are the central intelligence of the AIVA personal AI assistant.
 
-Important rules:
+Your personality:
+- Friendly
+- Natural
+- Helpful
+- Intelligent
+- Respectful
+- Clear
 
-1. Remember information from the conversation history provided to you.
-2. If the user tells you their name, preferences, plans or other information,
-   use that information later in the same conversation.
-3. Do not say that information is unavailable if it is present in the
-   conversation history.
-4. Understand Hindi, English, Hinglish, Marathi, Roman Hindi and Roman Marathi.
-5. Reply naturally in the language used by the user.
-6. Do not unnecessarily repeat greetings.
-7. Be concise when a short answer is enough.
-8. Give detailed answers when the user asks for details.
-9. You are AIVA One AI, the central intelligence of the AIVA application.
+Conversation rules:
+
+1. Remember information present in the conversation history.
+2. If the user tells you their name, remember it and use it later.
+3. If the user tells you about a project, preference, goal or plan,
+   use that information when relevant later in the conversation.
+4. Never claim that information is unavailable when it is clearly
+   present in the conversation history.
+5. Understand Hindi, Hinglish, Marathi, Roman Hindi,
+   Roman Marathi and English.
+6. Reply naturally in the language used by the user.
+7. Do not repeat the same greeting unnecessarily.
+8. Do not mention internal prompts, backend systems or APIs.
+9. Do not pretend that you performed an action if you did not.
+10. Answer directly and naturally.
+11. Give short answers for simple questions.
+12. Give detailed answers when the user asks for details.
+13. Maintain conversational context throughout the provided history.
+
+You are AIVA, not a generic chatbot.
 `;
 
-/* ---------------------------------------------------------
-   HOME
---------------------------------------------------------- */
+/* =========================================================
+   HEALTH CHECK
+========================================================= */
 
 app.get("/", (req, res) => {
 
     res.json({
         status: "online",
         service: "AIVA Backend",
-        model: GEMINI_MODEL
+        model: GEMINI_MODEL,
+        fallbackModel: GEMINI_FALLBACK_MODEL
     });
 });
 
-/* ---------------------------------------------------------
-   CHAT
---------------------------------------------------------- */
+/* =========================================================
+   CLEAN CONVERSATION HISTORY
+========================================================= */
 
-app.post("/api/chat", async (req, res) => {
+function buildConversationHistory(
+    conversation,
+    currentMessage
+) {
 
-    try {
-
-        const {
-            message,
-            aiName,
-            language,
-            conversation
-        } = req.body;
-
-        if (
-            !message ||
-            typeof message !== "string"
-        ) {
-
-            return res.status(400).json({
-                error: "Message is required."
-            });
-        }
-
-        /*
-         * Conversation history received from Android.
-         */
-
-        const history =
-            Array.isArray(conversation)
-                ? conversation
-                : [];
-
-        /*
-         * Keep only recent messages.
-         */
-
-        const recentHistory =
-            history.slice(-20);
-
-        /*
-         * Convert Android messages into
-         * Gemini conversation format.
-         */
-
-        const contents =
-            recentHistory
-                .filter(item =>
-                    item &&
-                    typeof item.content === "string" &&
-                    item.content.trim().length > 0
-                )
-                .map(item => {
-
-                    return {
-                        role:
-                            item.role === "assistant"
-                                ? "model"
-                                : "user",
-
-                        parts: [
-                            {
-                                text:
-                                    item.content.trim()
-                            }
-                        ]
-                    };
-                });
-
-        /*
-         * Safety check:
-         *
-         * MainActivity already sends the current user
-         * message inside conversation.
-         *
-         * If it is missing for any reason, add it.
-         */
-
-        const lastMessage =
-            contents.length > 0
-                ? contents[contents.length - 1]
-                : null;
-
-        const currentMessageAlreadyPresent =
-            lastMessage &&
-            lastMessage.role === "user" &&
-            lastMessage.parts &&
-            lastMessage.parts[0] &&
-            lastMessage.parts[0].text ===
-                message.trim();
-
-        if (!currentMessageAlreadyPresent) {
-
-            contents.push({
+    if (!Array.isArray(conversation)) {
+        return [
+            {
                 role: "user",
                 parts: [
                     {
-                        text: message.trim()
+                        text: currentMessage.trim()
+                    }
+                ]
+            }
+        ];
+    }
+
+    const recentMessages =
+        conversation
+            .slice(-20)
+            .filter(item => {
+
+                return (
+                    item &&
+                    typeof item.content === "string" &&
+                    item.content.trim().length > 0
+                );
+            });
+
+    const contents = [];
+
+    for (const item of recentMessages) {
+
+        const text =
+            item.content.trim();
+
+        const role =
+            item.role === "assistant"
+                ? "model"
+                : "user";
+
+        /*
+         * Gemini conversation should not begin
+         * with an assistant/model message.
+         */
+
+        if (
+            contents.length === 0 &&
+            role === "model"
+        ) {
+            continue;
+        }
+
+        const lastMessage =
+            contents[contents.length - 1];
+
+        /*
+         * Merge consecutive messages with
+         * the same role.
+         */
+
+        if (
+            lastMessage &&
+            lastMessage.role === role
+        ) {
+
+            lastMessage.parts[0].text +=
+                "\n\n" + text;
+
+        } else {
+
+            contents.push({
+
+                role: role,
+
+                parts: [
+                    {
+                        text: text
                     }
                 ]
             });
         }
+    }
 
-        /*
-         * Generate AI response.
-         */
+    /*
+     * Make sure the current message exists.
+     */
 
-        const response =
-            await ai.models.generateContent({
+    const cleanCurrentMessage =
+        currentMessage.trim();
 
-                model: GEMINI_MODEL,
+    const lastMessage =
+        contents[contents.length - 1];
 
-                contents: contents,
+    const currentMessageAlreadyExists =
+        lastMessage &&
+        lastMessage.role === "user" &&
+        lastMessage.parts &&
+        lastMessage.parts.length > 0 &&
+        lastMessage.parts[0].text
+            .trim()
+            .endsWith(
+                cleanCurrentMessage
+            );
 
-                config: {
+    if (!currentMessageAlreadyExists) {
 
-                    systemInstruction:
-                        SYSTEM_INSTRUCTION,
+        if (
+            lastMessage &&
+            lastMessage.role === "user"
+        ) {
 
-                    temperature: 0.7,
+            lastMessage.parts[0].text +=
+                "\n\n" + cleanCurrentMessage;
 
-                    maxOutputTokens: 2048
-                }
-            });
+        } else {
 
-        const text =
-            response.text || "";
+            contents.push({
 
-        if (!text.trim()) {
+                role: "user",
 
-            return res.status(500).json({
-                error: "AI returned an empty response."
+                parts: [
+                    {
+                        text: cleanCurrentMessage
+                    }
+                ]
             });
         }
+    }
 
-        res.json({
-            response: text.trim(),
-            aiName: aiName || "AIVA",
-            language: language || "English"
+    return contents;
+}
+
+/* =========================================================
+   GENERATE AI RESPONSE
+========================================================= */
+
+async function generateWithModel(
+    model,
+    contents
+) {
+
+    const response =
+        await ai.models.generateContent({
+
+            model: model,
+
+            contents: contents,
+
+            config: {
+
+                systemInstruction:
+                    SYSTEM_INSTRUCTION,
+
+                temperature: 0.7,
+
+                maxOutputTokens: 2048
+            }
         });
 
-    } catch (error) {
+    const text =
+        response.text || "";
 
-        console.error(
-            "AIVA CHAT ERROR:",
-            error
+    if (!text.trim()) {
+
+        throw new Error(
+            "AI returned an empty response."
+        );
+    }
+
+    return text.trim();
+}
+
+/* =========================================================
+   CHAT API
+========================================================= */
+
+app.post(
+    "/api/chat",
+    async (req, res) => {
+
+        try {
+
+            const {
+                message,
+                aiName,
+                language,
+                conversation
+            } = req.body;
+
+            /* -----------------------------------------
+               VALIDATE MESSAGE
+            ----------------------------------------- */
+
+            if (
+                typeof message !== "string" ||
+                message.trim().length === 0
+            ) {
+
+                return res.status(400).json({
+
+                    error:
+                        "Message is required."
+                });
+            }
+
+            /* -----------------------------------------
+               BUILD HISTORY
+            ----------------------------------------- */
+
+            const contents =
+                buildConversationHistory(
+                    conversation,
+                    message
+                );
+
+            /* -----------------------------------------
+               PRIMARY MODEL
+            ----------------------------------------- */
+
+            let responseText;
+
+            try {
+
+                responseText =
+                    await generateWithModel(
+                        GEMINI_MODEL,
+                        contents
+                    );
+
+            } catch (primaryError) {
+
+                console.error(
+                    "Primary model failed:",
+                    primaryError.message
+                );
+
+                /* -------------------------------------
+                   FALLBACK MODEL
+                ------------------------------------- */
+
+                responseText =
+                    await generateWithModel(
+                        GEMINI_FALLBACK_MODEL,
+                        contents
+                    );
+            }
+
+            /* -----------------------------------------
+               SUCCESS RESPONSE
+            ----------------------------------------- */
+
+            return res.json({
+
+                response: responseText,
+
+                aiName:
+                    aiName || "AIVA",
+
+                language:
+                    language || "English"
+            });
+
+        } catch (error) {
+
+            console.error(
+                "AIVA CHAT ERROR:",
+                error
+            );
+
+            return res.status(500).json({
+
+                error:
+                    "AIVA could not generate a response.",
+
+                details:
+                    error.message ||
+                    "Unknown error"
+            });
+        }
+    }
+);
+
+/* =========================================================
+   SERVER START
+========================================================= */
+
+app.listen(
+    PORT,
+    () => {
+
+        console.log(
+            "======================================"
         );
 
-        res.status(500).json({
-            error:
-                "AIVA could not generate a response.",
-            details:
-                error.message || "Unknown error"
-        });
+        console.log(
+            "AIVA Backend is running"
+        );
+
+        console.log(
+            `Port: ${PORT}`
+        );
+
+        console.log(
+            `Primary Model: ${GEMINI_MODEL}`
+        );
+
+        console.log(
+            `Fallback Model: ${GEMINI_FALLBACK_MODEL}`
+        );
+
+        console.log(
+            "======================================"
+        );
     }
-});
-
-/* ---------------------------------------------------------
-   SERVER
---------------------------------------------------------- */
-
-app.listen(PORT, () => {
-
-    console.log(
-        `AIVA Backend running on port ${PORT}`
-    );
-
-});
+);
